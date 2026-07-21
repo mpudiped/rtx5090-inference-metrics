@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPT-OSS Console</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#11161d; --panel-2:#161c25; --border:#232c38;
+    --border-bright:#2f3b4a; --text:#e6edf3; --muted:#8b97a7; --faint:#5d6b7d;
+    --accent:#e8a33d; --accent-dim:#a8782c; --live:#3fb950;
+    --user:#1b2530; --assistant:#11161d; --danger:#f06d5a;
+    --weights:#4d9de0; --kv-used:#e8a33d; --kv-free:#6b5228; --other:#8b5cf6; --free:#1f2832;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg);color:var(--text);font-family:var(--sans);
+    display:flex;flex-direction:column;height:100vh;overflow:hidden;
+    font-size:15px;line-height:1.55;
+  }
+
+  /* ---- top status readout (the signature element) ---- */
+  .readout{
+    display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+    padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--border);
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);user-select:none;
+  }
+  .readout .stat{display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .readout .label{color:var(--faint)}
+  .readout .val{color:var(--text)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);
+       box-shadow:0 0 0 0 rgba(63,185,80,.5);}
+  .dot.on{background:var(--live);animation:pulse 2.4s infinite}
+  .dot.off{background:var(--danger)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,185,80,.45)}70%{box-shadow:0 0 0 6px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+  .readout .spacer{flex:1}
+  .readout button{
+    font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    background:transparent;color:var(--muted);border:1px solid var(--border-bright);
+    padding:5px 11px;border-radius:5px;cursor:pointer;transition:.15s;
+  }
+  .readout button:hover{color:var(--text);border-color:var(--accent-dim)}
+
+  /* ---- telemetry strip ---- */
+  .telemetry{
+    display:flex;align-items:center;gap:0;background:var(--panel-2);
+    border-bottom:1px solid var(--border);padding:0 18px;height:38px;
+    font-family:var(--mono);font-size:11px;letter-spacing:.06em;overflow:hidden;
+  }
+  .telemetry .cell{display:flex;align-items:baseline;gap:6px;padding:0 16px;
+    border-right:1px solid var(--border);white-space:nowrap;height:16px}
+  .telemetry .cell:first-child{padding-left:0}
+  .telemetry .k{color:var(--faint);text-transform:uppercase;font-size:9.5px}
+  .telemetry .v{color:var(--text);font-size:12.5px;font-variant-numeric:tabular-nums;min-width:0}
+  .telemetry .v.big{color:var(--accent);font-size:13.5px;font-weight:600}
+  .telemetry .v.dim{color:var(--faint)}
+  .telemetry .src{font-size:8.5px;padding:1px 5px;border-radius:3px;letter-spacing:.1em;
+    border:1px solid var(--border-bright);color:var(--faint);margin-left:8px;text-transform:uppercase}
+  .telemetry .src.srv{color:var(--live);border-color:var(--live)}
+  .telemetry .src.client{color:var(--faint);border-color:var(--border-bright)}
+  .telemetry.live .v.big{color:var(--live)}
+  .telemetry .spark{margin-left:auto;padding-left:16px;display:flex;align-items:flex-end;
+    gap:2px;height:24px;border-left:1px solid var(--border)}
+  .telemetry .spark .bar{width:4px;background:var(--accent-dim);border-radius:1px 1px 0 0;
+    min-height:2px;transition:height .2s}
+  .telemetry .spark .bar.last{background:var(--accent)}
+  .telemetry .spark-label{color:var(--faint);font-size:9px;text-transform:uppercase;
+    align-self:center;margin-left:8px;letter-spacing:.08em}
+  @media(max-width:640px){
+    .telemetry .cell.opt{display:none}
+    .telemetry .spark{display:none}
+  }
+
+  /* ---- layout ---- */
+  .main{flex:1;display:flex;min-height:0}
+  .chat-col{flex:1;display:flex;flex-direction:column;min-width:0}
+  .stream{flex:1;overflow-y:auto;padding:26px 0}
+  .stream-inner{max-width:760px;margin:0 auto;padding:0 22px}
+
+  .msg{margin-bottom:22px;display:flex;gap:14px;align-items:flex-start}
+  .who{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    padding-top:4px;width:46px;flex-shrink:0;text-align:right;color:var(--faint);
+  }
+  .msg.user .who{color:var(--accent)}
+  .body{flex:1;min-width:0}
+  .bubble{
+    background:var(--assistant);border:1px solid var(--border);border-radius:10px;
+    padding:13px 16px;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;
+  }
+  .msg.user .bubble{background:var(--user);border-color:var(--border-bright)}
+  .bubble pre{
+    background:#0a0e13;border:1px solid var(--border);border-radius:7px;
+    padding:12px;overflow-x:auto;margin:10px 0;font-family:var(--mono);font-size:13px;
+    white-space:pre;line-height:1.5;
+  }
+  .bubble code{font-family:var(--mono);font-size:.88em;background:#0a0e13;
+    padding:1px 5px;border-radius:4px;border:1px solid var(--border)}
+  .bubble pre code{background:none;border:none;padding:0}
+
+  /* reasoning panel */
+  details.reasoning{margin-bottom:10px;border:1px dashed var(--border-bright);
+    border-radius:8px;background:#0f141b;overflow:hidden}
+  details.reasoning>summary{
+    cursor:pointer;padding:8px 14px;font-family:var(--mono);font-size:10.5px;
+    letter-spacing:.09em;text-transform:uppercase;color:var(--muted);user-select:none;
+    list-style:none;display:flex;align-items:center;gap:8px;
+  }
+  details.reasoning>summary::-webkit-details-marker{display:none}
+  details.reasoning>summary::before{content:"▸";color:var(--accent-dim);transition:.15s}
+  details.reasoning[open]>summary::before{transform:rotate(90deg)}
+  .reasoning-body{padding:0 14px 12px 14px;color:var(--muted);font-size:13.5px;
+    white-space:pre-wrap;border-top:1px solid var(--border);margin-top:0;padding-top:11px}
+
+  .meta{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:7px;letter-spacing:.04em}
+
+  .empty{max-width:760px;margin:60px auto;padding:0 22px;color:var(--muted)}
+  .empty h1{font-family:var(--mono);font-weight:600;font-size:17px;letter-spacing:.04em;
+    color:var(--text);margin:0 0 8px}
+  .empty p{margin:6px 0;font-size:14px}
+  .empty code{font-family:var(--mono);font-size:.86em;color:var(--accent);background:#11161d;
+    padding:2px 6px;border-radius:4px}
+
+  /* ---- composer ---- */
+  .composer{border-top:1px solid var(--border);background:var(--panel);padding:14px 22px}
+  .composer-inner{max-width:760px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+  textarea#input{
+    flex:1;resize:none;background:var(--panel-2);color:var(--text);
+    border:1px solid var(--border-bright);border-radius:9px;padding:12px 14px;
+    font-family:var(--sans);font-size:15px;line-height:1.5;max-height:200px;min-height:48px;
+    outline:none;transition:border-color .15s;
+  }
+  textarea#input:focus{border-color:var(--accent-dim)}
+  #send{
+    background:var(--accent);color:#1a1205;border:none;border-radius:9px;
+    padding:0 20px;height:48px;font-weight:650;font-size:14px;cursor:pointer;
+    font-family:var(--sans);transition:.15s;white-space:nowrap;
+  }
+  #send:hover{background:#f2b454}
+  #send:disabled{background:var(--border-bright);color:var(--faint);cursor:not-allowed}
+  #send.stop{background:var(--danger);color:#1a0a07}
+  .hint{max-width:760px;margin:7px auto 0;font-family:var(--mono);font-size:10px;
+    color:var(--faint);letter-spacing:.05em;text-align:center}
+
+  /* ---- settings drawer ---- */
+  .drawer{width:0;overflow:hidden;background:var(--panel);border-left:1px solid var(--border);
+    transition:width .2s ease;flex-shrink:0}
+  .drawer.open{width:290px;overflow-y:auto}
+  .drawer-inner{padding:20px;width:290px}
+  .drawer h2{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--muted);margin:0 0 18px;font-weight:600}
+  .field{margin-bottom:18px}
+  .field label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--faint);margin-bottom:7px}
+  .field input[type=text],.field input[type=number],.field select{
+    width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--border-bright);
+    border-radius:6px;padding:8px 10px;font-family:var(--mono);font-size:13px;outline:none}
+  .field input:focus,.field select:focus{border-color:var(--accent-dim)}
+  .range-row{display:flex;align-items:center;gap:10px}
+  .range-row input[type=range]{flex:1;accent-color:var(--accent)}
+  .range-row .num{font-family:var(--mono);font-size:13px;color:var(--text);width:38px;text-align:right}
+  .field .desc{font-size:11px;color:var(--faint);margin-top:6px;line-height:1.45}
+
+  .stream::-webkit-scrollbar,.drawer::-webkit-scrollbar{width:10px}
+  .stream::-webkit-scrollbar-thumb,.drawer::-webkit-scrollbar-thumb{background:#1f2832;border-radius:5px}
+  .stream::-webkit-scrollbar-thumb:hover{background:#2a3542}
+
+  @media(max-width:640px){
+    .who{display:none}
+    .drawer.open{width:100%;position:absolute;right:0;top:0;bottom:0;z-index:5;height:auto}
+  }
+</style>
+</head>
+<body>
+
+  <div class="readout">
+    <div class="stat"><span id="dot" class="dot"></span><span id="status" class="val">connecting…</span></div>
+    <div class="stat"><span class="label">model</span><span id="model-readout" class="val">—</span></div>
+    <div class="stat"><span class="label">endpoint</span><span id="ep-readout" class="val">—</span></div>
+    <div class="spacer"></div>
+    <div class="stat"><span class="label">last</span><span id="tok-readout" class="val">—</span></div>
+    <button id="clear-btn">Clear</button>
+    <button id="vram-btn">VRAM</button>
+    <button id="metrics-btn">Metrics</button>
+    <button id="settings-btn">Settings</button>
+  </div>
+
+  <div class="telemetry" id="telemetry">
+    <div class="cell"><span class="k">throughput</span><span class="v big" id="t-tps">—</span><span class="v dim" id="t-tps-unit"></span><span class="src" id="t-src"></span></div>
+    <div class="cell"><span class="k">output</span><span class="v" id="t-out">—</span></div>
+    <div class="cell opt"><span class="k">ttft</span><span class="v" id="t-ttft">—</span></div>
+    <div class="cell opt"><span class="k">prompt</span><span class="v" id="t-prompt">—</span></div>
+    <div class="cell opt"><span class="k">total</span><span class="v" id="t-total">—</span></div>
+    <div class="spark" id="spark"></div>
+    <div class="spark-label opt">tok/s · session</div>
+  </div>
+
+  <div class="main">
+    <div class="chat-col">
+      <div class="stream" id="stream">
+        <div class="empty" id="empty">
+          <h1>GPT-OSS Console</h1>
+          <p>Talking to your local TensorRT-LLM server. Type a message below to start.</p>
+          <p>If the status light is red, open <strong>Settings</strong> and check the endpoint URL — it should match where <code>trtllm-serve</code> is listening (default <code>http://localhost:9000</code>).</p>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="composer-inner">
+          <textarea id="input" placeholder="Send a message…  (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+          <button id="send">Send</button>
+        </div>
+        <div class="hint">streaming · enter sends · shift+enter newline</div>
+      </div>
+    </div>
+
+    <div class="drawer" id="drawer">
+      <div class="drawer-inner">
+        <h2>Settings</h2>
+        <div class="field">
+          <label for="base-url">Server endpoint</label>
+          <input type="text" id="base-url" value="http://localhost:8000">
+          <div class="desc">Base URL of your trtllm-serve instance. No trailing slash.</div>
+        </div>
+        <div class="field">
+          <label for="model-name">Model name</label>
+          <input type="text" id="model-name" placeholder="auto-detected from /v1/models">
+          <div class="desc">Auto-filled from the server. Override if requests are rejected.</div>
+        </div>
+        <div class="field">
+          <label for="temp">Temperature <span id="temp-val" style="float:right;color:var(--text)">0.7</span></label>
+          <div class="range-row">
+            <input type="range" id="temp" min="0" max="2" step="0.05" value="0.7">
+          </div>
+          <div class="desc">Higher = more random. 0 = deterministic.</div>
+        </div>
+        <div class="field">
+          <label for="max-tokens">Max tokens</label>
+          <input type="number" id="max-tokens" value="1024" min="1" max="131072">
+          <div class="desc">Cap on the length of each reply.</div>
+        </div>
+        <div class="field">
+          <label for="effort">Reasoning effort</label>
+          <select id="effort">
+            <option value="">don't send (server default)</option>
+            <option value="low">low</option>
+            <option value="medium" selected>medium</option>
+            <option value="high">high</option>
+          </select>
+          <div class="desc">gpt-oss control. Lower = faster, less thinking. "Don't send" if your server rejects the field.</div>
+        </div>
+        <div class="field">
+          <label>System prompt</label>
+          <textarea id="system" rows="3" style="width:100%;background:var(--panel-2);color:var(--text);border:1px solid var(--border-bright);border-radius:6px;padding:8px 10px;font-family:var(--sans);font-size:13px;resize:vertical;outline:none" placeholder="(optional) e.g. You are a concise assistant."></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="drawer" id="metrics-drawer">
+      <div class="drawer-inner">
+        <h2>/metrics debug</h2>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button id="metrics-refresh" style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;background:var(--accent);color:#1a1205;border:none;padding:7px 12px;border-radius:5px;cursor:pointer">Fetch now</button>
+          <button id="metrics-clear" style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;background:transparent;color:var(--muted);border:1px solid var(--border-bright);padding:7px 12px;border-radius:5px;cursor:pointer">Clear</button>
+        </div>
+        <div style="font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-bottom:10px;line-height:1.5">Raw response from <code style="color:var(--accent)">/metrics</code>, captured after each reply (and on demand). Newest on top.</div>
+        <div id="metrics-out" style="font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;word-break:break-word;line-height:1.5;color:var(--text)"></div>
+      </div>
+    </div>
+
+    <div class="drawer" id="vram-drawer">
+      <div class="drawer-inner">
+        <h2>VRAM <span id="vram-status" style="color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0;font-size:10px"> — idle</span></h2>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--faint);margin-bottom:6px;line-height:1.5">Served by the proxy at <code style="color:var(--accent)">/vram</code> on the same endpoint as chat (set in Settings). Polls while this panel is open.</div>
+
+        <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:14px 0 6px">KV cache utilization</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+          <span id="vram-util" style="font-family:var(--mono);font-size:26px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums">—</span>
+        </div>
+        <div style="height:18px;background:var(--panel-2);border:1px solid var(--border);border-radius:5px;overflow:hidden">
+          <div id="vram-util-fill" style="height:100%;width:0%;background:var(--kv-used);transition:width .4s"></div>
+        </div>
+        <div id="vram-util-note" style="font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:6px;line-height:1.5"></div>
+
+        <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:18px 0 6px">Memory breakdown</div>
+        <div id="vram-membar" class="bar" style="height:22px"></div>
+        <div id="vram-legend" style="display:flex;flex-direction:column;gap:5px;margin-top:10px;font-family:var(--mono);font-size:11px"></div>
+
+        <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:18px 0 6px">Stats</div>
+        <div id="vram-stats" style="font-family:var(--mono);font-size:11px;color:var(--muted)"></div>
+        <div id="vram-err" style="color:var(--danger);font-family:var(--mono);font-size:10.5px;margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+//// ---- tiny persistence (degrades gracefully if storage is blocked) ----
+const store = {
+  get(k,d){ try{ const v=localStorage.getItem(k); return v===null?d:v; }catch(e){ return d; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+};
+
+const els = {
+  stream: document.getElementById('stream'),
+  empty: document.getElementById('empty'),
+  input: document.getElementById('input'),
+  send: document.getElementById('send'),
+  dot: document.getElementById('dot'),
+  status: document.getElementById('status'),
+  modelReadout: document.getElementById('model-readout'),
+  epReadout: document.getElementById('ep-readout'),
+  tokReadout: document.getElementById('tok-readout'),
+  drawer: document.getElementById('drawer'),
+  baseUrl: document.getElementById('base-url'),
+  modelName: document.getElementById('model-name'),
+  temp: document.getElementById('temp'),
+  tempVal: document.getElementById('temp-val'),
+  maxTokens: document.getElementById('max-tokens'),
+  effort: document.getElementById('effort'),
+  system: document.getElementById('system'),
+  telemetry: document.getElementById('telemetry'),
+  tTps: document.getElementById('t-tps'),
+  tTpsUnit: document.getElementById('t-tps-unit'),
+  tOut: document.getElementById('t-out'),
+  tTtft: document.getElementById('t-ttft'),
+  tPrompt: document.getElementById('t-prompt'),
+  tTotal: document.getElementById('t-total'),
+  spark: document.getElementById('spark'),
+  tSrc: document.getElementById('t-src'),
+  metricsDrawer: document.getElementById('metrics-drawer'),
+  metricsOut: document.getElementById('metrics-out'),
+  vramDrawer: document.getElementById('vram-drawer'),
+  vramStatus: document.getElementById('vram-status'),
+  vramUtil: document.getElementById('vram-util'),
+  vramUtilFill: document.getElementById('vram-util-fill'),
+  vramUtilNote: document.getElementById('vram-util-note'),
+  vramMembar: document.getElementById('vram-membar'),
+  vramLegend: document.getElementById('vram-legend'),
+  vramStats: document.getElementById('vram-stats'),
+  vramErr: document.getElementById('vram-err'),
+};
+
+// rolling record of throughput (tok/s) for each completed response this session
+let tpsHistory = [];
+
+function drawSpark(){
+  const vals = tpsHistory.slice(-24);
+  if(!vals.length){ els.spark.innerHTML=''; return; }
+  const max = Math.max(...vals, 1);
+  els.spark.innerHTML = vals.map((v,i)=>{
+    const h = Math.max(2, Math.round((v/max)*22));
+    const last = i===vals.length-1 ? ' last' : '';
+    return `<div class="bar${last}" style="height:${h}px" title="${v.toFixed(1)} tok/s"></div>`;
+  }).join('');
+}
+
+// live/idle state of the telemetry strip
+function telemetrySet({tps, out, ttft, prompt, total, live}){
+  els.telemetry.classList.toggle('live', !!live);
+  if(tps!==undefined){ els.tTps.textContent = tps===null?'—':tps.toFixed(1); els.tTpsUnit.textContent = tps===null?'':'tok/s'; }
+  if(out!==undefined) els.tOut.textContent = out===null?'—':`${out} tok`;
+  if(ttft!==undefined) els.tTtft.textContent = ttft===null?'—':`${ttft.toFixed(2)}s`;
+  if(prompt!==undefined) els.tPrompt.textContent = prompt===null?'—':`${prompt} tok`;
+  if(total!==undefined) els.tTotal.textContent = total===null?'—':`${total.toFixed(2)}s`;
+}
+
+//// ---- server-side (engine) perf metrics ----
+// trtllm-serve exposes true per-request engine timings at /perf_metrics when the
+// server was launched with return_perf_metrics: true. Timestamps are absolute
+// seconds, so differences are pure engine time (no network/proxy/browser clock).
+async function fetchServerPerf(){
+  try{
+    const r = await fetch(baseUrl()+'/perf_metrics');
+    if(!r.ok) return null;
+    const data = await r.json();
+    // shape varies by version: array of entries, or wrapped in a key
+    const arr = Array.isArray(data) ? data
+              : (data.perf_metrics || data.requests || data.data || []);
+    if(!arr.length) return null;
+    // single-user console: newest entry by arrival time is the one we just sent
+    let best=null, bestT=-Infinity;
+    for(const e of arr){
+      const tm = e.timing_metrics || e.timingMetrics || e.perf_metrics?.timing_metrics || e;
+      const at = tm.arrival_time ?? tm.arrivalTime;
+      if(typeof at==='number' && at>bestT){ bestT=at; best=tm; }
+    }
+    return best;
+  }catch(e){ return null; }
+}
+// turn the raw timestamps into durations (seconds)
+function serverStats(tm){
+  if(!tm) return null;
+  const arrival    = tm.arrival_time ?? tm.arrivalTime;
+  const firstSched = tm.first_scheduled_time ?? tm.firstScheduledTime ?? arrival;
+  const firstTok   = tm.first_token_time ?? tm.firstTokenTime;
+  const lastTok    = tm.last_token_time ?? tm.lastTokenTime;
+  if(typeof arrival!=='number' || typeof firstTok!=='number' || typeof lastTok!=='number') return null;
+  return {
+    queue: Math.max(0, firstSched - arrival),  // waited in queue before scheduling
+    ttft:  firstTok - arrival,                 // server TTFT = queue + prefill
+    gen:   Math.max(0, lastTok - firstTok),    // pure decode window
+    total: lastTok - arrival,                  // engine-side end-to-end
+  };
+}
+
+// restore saved settings
+els.baseUrl.value = store.get('baseUrl','http://localhost:8000');
+els.modelName.value = store.get('modelName','');
+els.temp.value = store.get('temp','0.7'); els.tempVal.textContent = els.temp.value;
+els.maxTokens.value = store.get('maxTokens','1024');
+els.effort.value = store.get('effort','medium');
+els.system.value = store.get('system','');
+els.vramEndpoint = null;
+
+let messages = [];           // {role, content, reasoning}
+let activeController = null;  // AbortController for in-flight request
+
+function baseUrl(){ return els.baseUrl.value.replace(/\/+$/,''); }
+
+//// ---- connection check + model discovery ----
+async function checkServer(){
+  setStatus('connecting','connecting…');
+  els.epReadout.textContent = baseUrl().replace(/^https?:\/\//,'');
+  try{
+    const h = await fetch(baseUrl()+'/health',{method:'GET'});
+    if(!h.ok) throw new Error('health '+h.status);
+    setStatus('on','online');
+    // discover model name
+    try{
+      const m = await fetch(baseUrl()+'/v1/models');
+      const data = await m.json();
+      const id = data?.data?.[0]?.id;
+      if(id){
+        els.modelReadout.textContent = id;
+        if(!els.modelName.value) els.modelName.value = id;
+      }
+    }catch(e){ /* models optional */ }
+  }catch(e){
+    setStatus('off','offline');
+    els.modelReadout.textContent = '—';
+  }
+}
+function setStatus(cls,text){
+  els.dot.className = 'dot '+(cls==='on'?'on':cls==='off'?'off':'');
+  els.status.textContent = text;
+}
+
+//// ---- rendering ----
+function esc(s){ return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function renderMarkdown(text){
+  // split on fenced code blocks, escape, then light inline formatting
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  return parts.map(p=>{
+    const fence = p.match(/^```(\w*)\n?([\s\S]*?)```$/);
+    if(fence){ return '<pre><code>'+esc(fence[2])+'</code></pre>'; }
+    let h = esc(p);
+    h = h.replace(/`([^`]+)`/g,'<code>$1</code>');
+    h = h.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    return h;
+  }).join('');
+}
+
+function clearEmpty(){ if(els.empty){ els.empty.remove(); els.empty=null; } }
+
+function addMessageEl(role){
+  clearEmpty();
+  const wrap = document.createElement('div');
+  wrap.className = 'msg '+role;
+  const who = document.createElement('div');
+  who.className='who'; who.textContent = role==='user'?'you':'oss';
+  const body = document.createElement('div'); body.className='body';
+  wrap.appendChild(who); wrap.appendChild(body);
+  els.stream.appendChild(wrap);
+  return body;
+}
+
+function scrollDown(){ els.stream.scrollTop = els.stream.scrollHeight; }
+
+// DEBUG: fetch /metrics and show the raw result in the dedicated Metrics panel
+async function dumpMetrics(){
+  const time = new Date().toLocaleTimeString();
+  let result;
+  try{
+    const r = await fetch(baseUrl()+'/metrics');
+    const text = await r.text();
+    result = `HTTP ${r.status}\n` + (text.trim()==='' ? '(empty body)' : text);
+  }catch(e){
+    result = `request failed: ${e.message || e}`;
+  }
+  const entry = document.createElement('div');
+  entry.style.cssText = 'border-top:1px solid var(--border);padding:10px 0;margin-top:2px';
+  entry.innerHTML = `<div style="color:var(--faint);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px">${time}</div>`;
+  const pre = document.createElement('div');
+  pre.style.cssText = 'white-space:pre-wrap;word-break:break-word';
+  pre.textContent = result;
+  entry.appendChild(pre);
+  els.metricsOut.prepend(entry);   // newest on top
+  // keep the panel from growing without bound
+  while(els.metricsOut.children.length > 30) els.metricsOut.lastChild.remove();
+}
+
+//// ---- VRAM panel (polls the vram_helper /vram endpoint) ----
+let vramTimer = null;
+const _GiB = 1024**3;
+function _g(b){ return (b==null) ? null : b/_GiB; }
+function _fg(x){ return (x==null) ? '—' : x.toFixed(2)+' GiB'; }
+
+async function fetchVram(){
+  const base = baseUrl();
+  try{
+    const r = await fetch(base+'/vram');
+    if(!r.ok){ els.vramStatus.textContent = ' — HTTP '+r.status; return; }
+    const d = await r.json();
+    if(d.error){ els.vramStatus.textContent=' — helper error'; els.vramErr.textContent=d.error; return; }
+    els.vramErr.textContent='';
+    els.vramStatus.textContent = ' — live · '+new Date().toLocaleTimeString();
+    renderVram(d);
+  }catch(e){
+    els.vramStatus.textContent = ' — unreachable';
+    els.vramErr.textContent = 'Cannot reach '+base+'/vram — is vram_helper.py running and its port exposed?';
+  }
+}
+
+function renderVram(d){
+  const kv = d.kv || {};
+  const util = d.kv_utilization;
+  if(util!=null){
+    const pct = util*100;
+    els.vramUtil.textContent = pct.toFixed(1)+'%';
+    els.vramUtil.style.color = pct>90 ? 'var(--danger)' : 'var(--accent)';
+    els.vramUtilFill.style.width = Math.min(100,pct)+'%';
+    els.vramUtilFill.style.background = pct>90 ? 'var(--danger)' : 'var(--kv-used)';
+    const tpb = kv.tokens_per_block;
+    els.vramUtilNote.textContent = (tpb!=null)
+      ? `${(kv.used_blocks*tpb).toLocaleString()} / ${(kv.max_blocks*tpb).toLocaleString()} tokens · ${kv.free_blocks} blocks free`
+      : `${kv.used_blocks} / ${kv.max_blocks} blocks`;
+  }else{
+    els.vramUtil.textContent='—';
+    els.vramUtilNote.textContent='No active iterations — send a prompt to populate KV.';
+  }
+
+  const cardTotal = _g(d.card_total_bytes);
+  const engineTotal = _g(d.engine_total_bytes);
+  const weights = _g(d.weights_bytes);
+  const kvPool  = _g(d.kv_pool_bytes);
+  const kvUsed  = _g(d.kv_used_bytes) ?? ((kvPool!=null && util!=null) ? kvPool*util : null);
+  const kvFree  = (kvPool!=null && kvUsed!=null) ? Math.max(0,kvPool-kvUsed) : null;
+  const other   = _g(d.other_bytes);
+  const freeCard= (cardTotal!=null && engineTotal!=null) ? Math.max(0,cardTotal-engineTotal) : null;
+  const total = cardTotal ?? engineTotal ?? 0;
+
+  const segs = [
+    {label:'weights',     v:weights, c:'var(--weights)'},
+    {label:'kv used',     v:kvUsed,  c:'var(--kv-used)'},
+    {label:'kv reserved', v:kvFree,  c:'var(--kv-free)'},
+    {label:'other',       v:other,   c:'var(--other)'},
+    {label:'free',        v:freeCard,c:'var(--free)'},
+  ];
+  els.vramMembar.innerHTML = segs.map(s=>{
+    const pct = (total>0 && s.v!=null) ? (s.v/total*100) : 0;
+    return `<div class="seg" style="width:${pct}%;background:${s.c}" title="${s.label}: ${_fg(s.v)}"></div>`;
+  }).join('');
+  els.vramLegend.innerHTML = segs.map(s=>
+    `<div style="display:flex;align-items:center;gap:7px;color:var(--muted)"><span style="width:10px;height:10px;border-radius:3px;background:${s.c};flex-shrink:0"></span>${s.label}<span style="margin-left:auto;color:var(--text)">${_fg(s.v)}</span></div>`
+  ).join('');
+
+  const rows = [
+    ['engine total', _fg(engineTotal)],
+    ['card total', _fg(cardTotal)],
+    ['weights', _fg(weights)],
+    ['kv pool', _fg(kvPool)],
+    ['kv in use', _fg(kvUsed)],
+    ['other', _fg(other)],
+    ['blocks used', kv.used_blocks!=null?kv.used_blocks.toLocaleString():'—'],
+    ['blocks max', kv.max_blocks!=null?kv.max_blocks.toLocaleString():'—'],
+    ['active reqs', kv.active_requests ?? '—'],
+  ];
+  els.vramStats.innerHTML = rows.map(([k,v])=>
+    `<div style="display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--faint)">${k}</span><span style="margin-left:auto;color:var(--text)">${v}</span></div>`
+  ).join('');
+}
+
+function startVramPoll(){ fetchVram(); vramTimer = setInterval(fetchVram, 1500); }
+function stopVramPoll(){ clearInterval(vramTimer); vramTimer=null; }
+
+//// ---- sending ----
+async function send(){
+  const text = els.input.value.trim();
+  if(!text || activeController) return;
+
+  // persist settings
+  store.set('baseUrl',els.baseUrl.value); store.set('modelName',els.modelName.value);
+  store.set('temp',els.temp.value); store.set('maxTokens',els.maxTokens.value);
+  store.set('effort',els.effort.value); store.set('system',els.system.value);
+
+  messages.push({role:'user',content:text});
+  const ubody = addMessageEl('user');
+  ubody.innerHTML = '<div class="bubble">'+renderMarkdown(text)+'</div>';
+  els.input.value=''; autosize();
+  scrollDown();
+
+  // assistant placeholder
+  const abody = addMessageEl('assistant');
+  let reasoningEl=null, reasoningBody=null;
+  const bubble = document.createElement('div'); bubble.className='bubble';
+  bubble.innerHTML = '<span style="color:var(--faint)">▋</span>';
+  abody.appendChild(bubble);
+  const meta = document.createElement('div'); meta.className='meta'; abody.appendChild(meta);
+  scrollDown();
+
+  // build request
+  const apiMessages = [];
+  if(els.system.value.trim()) apiMessages.push({role:'system',content:els.system.value.trim()});
+  for(const m of messages) apiMessages.push({role:m.role,content:m.content});
+
+  const payload = {
+    model: els.modelName.value || els.modelReadout.textContent || 'model',
+    messages: apiMessages,
+    stream: true,
+    stream_options: {include_usage: true},   // ask the server for exact token counts
+    temperature: parseFloat(els.temp.value),
+    max_tokens: parseInt(els.maxTokens.value),
+  };
+  if(els.effort.value) payload.reasoning_effort = els.effort.value;
+
+  activeController = new AbortController();
+  setSending(true);
+
+  let answer='', reasoning='', firstTokenAt=null, tokCount=0, usage=null;
+  const startedAt = performance.now();
+
+  // live telemetry: update the strip a few times a second while generating
+  telemetrySet({tps:null, out:0, ttft:null, prompt:null, total:0, live:true});
+  const liveTimer = setInterval(()=>{
+    const now = performance.now();
+    els.tTotal.textContent = ((now-startedAt)/1000).toFixed(2)+'s';
+    els.tOut.textContent = tokCount+' tok';
+    if(firstTokenAt){
+      els.tTtft.textContent = ((firstTokenAt-startedAt)/1000).toFixed(2)+'s';
+      const genS = (now-firstTokenAt)/1000;
+      if(genS>0 && tokCount>1) els.tTps.textContent = (tokCount/genS).toFixed(1);
+    }
+  }, 150);
+
+  try{
+    const resp = await fetch(baseUrl()+'/v1/chat/completions',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload),
+      signal:activeController.signal,
+    });
+    if(!resp.ok){
+      const errText = await resp.text().catch(()=> '');
+      throw new Error('HTTP '+resp.status+(errText?(' — '+errText.slice(0,300)):''));
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf='';
+    while(true){
+      const {done,value} = await reader.read();
+      if(done) break;
+      buf += decoder.decode(value,{stream:true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for(const line of lines){
+        const t = line.trim();
+        if(!t || !t.startsWith('data:')) continue;
+        const data = t.slice(5).trim();
+        if(data==='[DONE]') continue;
+        let json; try{ json = JSON.parse(data); }catch(e){ continue; }
+        if(json.usage) usage = json.usage;   // final chunk carries exact token counts
+        const delta = json.choices?.[0]?.delta || {};
+        if(delta.reasoning_content){
+          if(firstTokenAt===null) firstTokenAt=performance.now();
+          reasoning += delta.reasoning_content;
+          if(!reasoningEl){
+            reasoningEl = document.createElement('details');
+            reasoningEl.className='reasoning'; reasoningEl.open=true;
+            reasoningEl.innerHTML='<summary>reasoning</summary><div class="reasoning-body"></div>';
+            abody.insertBefore(reasoningEl, bubble);
+            reasoningBody = reasoningEl.querySelector('.reasoning-body');
+          }
+          reasoningBody.textContent = reasoning;
+        }
+        if(delta.content){
+          if(firstTokenAt===null) firstTokenAt=performance.now();
+          answer += delta.content;
+          tokCount++;
+          bubble.innerHTML = renderMarkdown(answer)+'<span style="color:var(--faint)">▋</span>';
+        }
+        scrollDown();
+      }
+    }
+    // finalize
+    clearInterval(liveTimer);
+    bubble.innerHTML = answer? renderMarkdown(answer) : '<span style="color:var(--faint)">(empty response)</span>';
+    if(reasoningEl) reasoningEl.open=false;
+    messages.push({role:'assistant',content:answer});
+
+    // client-side timings (what we measured in the browser)
+    const endAt = performance.now();
+    const totalMs = endAt - startedAt;
+    const cTtftMs = firstTokenAt ? (firstTokenAt - startedAt) : totalMs;
+    const cGenMs  = firstTokenAt ? (endAt - firstTokenAt) : totalMs;
+    const outTokens    = usage?.completion_tokens ?? tokCount;
+    const promptTokens = usage?.prompt_tokens ?? null;
+
+    // try to replace them with true engine-side timings from the server
+    const srv = serverStats(await fetchServerPerf());
+
+    let ttftS, genS, totalS, tps, source, queueS=null;
+    if(srv && srv.gen>0){
+      ttftS=srv.ttft; genS=srv.gen; totalS=srv.total; queueS=srv.queue;
+      tps = outTokens/genS; source='srv';
+    }else{
+      ttftS=cTtftMs/1000; genS=cGenMs/1000; totalS=totalMs/1000;
+      tps = genS>0 ? outTokens/genS : 0; source='client';
+    }
+
+    telemetrySet({tps, out:outTokens, ttft:ttftS, prompt:promptTokens, total:totalS, live:false});
+    if(promptTokens===null) els.tPrompt.textContent='n/a';
+    els.tSrc.textContent = source; els.tSrc.className = 'src '+source;
+
+    tpsHistory.push(tps); drawSpark();
+
+    const q = queueS!==null ? ` · queue ${(queueS*1000).toFixed(0)}ms` : '';
+    const estMark = (source==='client' && !usage) ? ' · est.' : '';
+    meta.textContent = `${outTokens} tok · ${tps.toFixed(1)} tok/s · ttft ${(ttftS*1000).toFixed(0)}ms${q} · ${totalS.toFixed(2)}s · ${source}${estMark}`;
+    els.tokReadout.textContent = `${outTokens} tok @ ${tps.toFixed(0)}/s`;
+
+    // DEBUG: show whatever /metrics returns, right after generation
+    dumpMetrics();
+
+  }catch(err){
+    clearInterval(liveTimer);
+    els.telemetry.classList.remove('live');
+    if(err.name==='AbortError'){
+      bubble.innerHTML = renderMarkdown(answer) + '<span style="color:var(--danger)"> ⏹ stopped</span>';
+      if(answer) messages.push({role:'assistant',content:answer});
+      // record partial throughput so the stopped run still shows on the strip/spark
+      const endAt=performance.now();
+      const genMs = firstTokenAt ? (endAt-firstTokenAt) : (endAt-startedAt);
+      const out = usage?.completion_tokens ?? tokCount;
+      const tps = genMs>0 && out>0 ? out/(genMs/1000) : 0;
+      telemetrySet({tps:tps||null, out, ttft:firstTokenAt?(firstTokenAt-startedAt)/1000:null,
+        prompt:usage?.prompt_tokens ?? null, total:(endAt-startedAt)/1000, live:false});
+      if(tps>0){ tpsHistory.push(tps); drawSpark(); }
+    }else{
+      let msg = err.message||String(err);
+      let hint='';
+      if(msg==='Failed to fetch' || /NetworkError/i.test(msg)){
+        hint = '\n\nCouldn\'t reach the server. Two likely causes:\n• The server isn\'t running, or the endpoint URL in Settings is wrong.\n• CORS: the browser blocked a cross-origin request. See the note that came with this file for the one-line proxy fix.';
+        setStatus('off','offline');
+      }
+      bubble.className='bubble';
+      bubble.style.borderColor='var(--danger)';
+      bubble.innerHTML = '<strong style="color:var(--danger)">Request failed</strong>\n'+esc(msg)+esc(hint);
+      // remove the broken user turn from history so retry works cleanly
+    }
+  }finally{
+    setSending(false);
+    activeController=null;
+    scrollDown();
+  }
+}
+
+function setSending(on){
+  if(on){ els.send.textContent='Stop'; els.send.classList.add('stop'); }
+  else { els.send.textContent='Send'; els.send.classList.remove('stop'); }
+}
+
+//// ---- events ----
+els.send.addEventListener('click',()=>{
+  if(activeController){ activeController.abort(); }
+  else send();
+});
+els.input.addEventListener('keydown',e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+});
+function autosize(){ els.input.style.height='auto'; els.input.style.height=Math.min(els.input.scrollHeight,200)+'px'; }
+els.input.addEventListener('input',autosize);
+
+els.temp.addEventListener('input',()=>{ els.tempVal.textContent=els.temp.value; });
+els.baseUrl.addEventListener('change',()=>{ store.set('baseUrl',els.baseUrl.value); checkServer(); });
+
+document.getElementById('settings-btn').addEventListener('click',()=>{
+  els.metricsDrawer.classList.remove('open');
+  els.vramDrawer.classList.remove('open'); stopVramPoll();
+  els.drawer.classList.toggle('open');
+});
+document.getElementById('metrics-btn').addEventListener('click',()=>{
+  els.drawer.classList.remove('open');
+  els.vramDrawer.classList.remove('open'); stopVramPoll();
+  els.metricsDrawer.classList.toggle('open');
+});
+document.getElementById('vram-btn').addEventListener('click',()=>{
+  els.drawer.classList.remove('open');
+  els.metricsDrawer.classList.remove('open');
+  const opening = !els.vramDrawer.classList.contains('open');
+  els.vramDrawer.classList.toggle('open');
+  if(opening){ startVramPoll(); }
+  else stopVramPoll();
+});
+document.getElementById('metrics-refresh').addEventListener('click', dumpMetrics);
+document.getElementById('metrics-clear').addEventListener('click',()=>{ els.metricsOut.innerHTML=''; });
+document.getElementById('clear-btn').addEventListener('click',()=>{
+  messages=[];
+  els.stream.innerHTML='';
+  els.tokReadout.textContent='—';
+  const e=document.createElement('div'); e.className='empty'; e.id='empty';
+  e.innerHTML='<h1>GPT-OSS Console</h1><p>Conversation cleared. Send a message to start a new one.</p>';
+  els.stream.appendChild(e); els.empty=e;
+});
+
+// boot
+checkServer();
+setInterval(()=>{ if(!activeController) checkServer(); }, 15000);
+</script>
+</body>
+</html>

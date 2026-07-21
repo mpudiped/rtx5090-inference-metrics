@@ -1,0 +1,4 @@
+[vram] MODEL_DIR = /workspace/gpt-oss-20b
+[vram] safetensors found = 3
+proxy on :9000  ->  trtllm http://127.0.0.1:8000  |  model /workspace/gpt-oss-20b  |  gpu 0
+open  http://localhost:9000/gpt-oss-console.html  and set the console endpoint to  http://localhost:9000
