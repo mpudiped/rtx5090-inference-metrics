@@ -26,6 +26,7 @@ Env vars:
 """
 import os, glob, json, subprocess, urllib.request, urllib.error
 from http.server import SimpleHTTPRequestHandler, HTTPServer
+import threading, time
 
 TRTLLM         = os.environ.get("TRTLLM", "http://127.0.0.1:8000").rstrip("/")
 PORT           = int(os.environ.get("PORT", "9000"))
@@ -39,7 +40,7 @@ KV_DTYPE_BYTES = int(os.environ.get("KV_DTYPE_BYTES", "2"))
 
 FORWARD_PREFIXES = ("/v1",)
 FORWARD_EXACT    = ("/health", "/metrics", "/perf_metrics")
-
+_kv_cache = {"data": None, "ts": 0}
 
 # ---------------- VRAM computation (was the separate helper) ----------------
 def weights_bytes():
@@ -92,24 +93,34 @@ def smi_process():
     except Exception:
         return None
 
-def kv_from_metrics():
-    try:
-        with urllib.request.urlopen(TRTLLM + "/metrics", timeout=2) as r:
-            data = json.loads(r.read())
-        arr = data if isinstance(data, list) else data.get("metrics", [])
-        if not arr:
-            return None
-        latest = max(arr, key=lambda e: e.get("iter", 0))
-        kv = latest.get("kvCacheStats", {})
-        return {
-            "used_blocks": kv.get("usedNumBlocks"), "free_blocks": kv.get("freeNumBlocks"),
-            "max_blocks": kv.get("maxNumBlocks"), "tokens_per_block": kv.get("tokensPerBlock"),
-            "cache_hit_rate": kv.get("cacheHitRate"), "gpu_mem_usage": latest.get("gpuMemUsage"),
-            "active_requests": latest.get("numActiveRequests"), "iter_latency_ms": latest.get("iterLatencyMS"),
-        }
-    except Exception:
-        return None
+def _kv_poller():
+    """Continuously drain /metrics and keep the latest non-empty KV reading."""
+    while True:
+        try:
+            with urllib.request.urlopen(TRTLLM + "/metrics", timeout=2) as r:
+                data = json.loads(r.read())
+            arr = data if isinstance(data, list) else data.get("metrics", [])
+            if arr:
+                latest = max(arr, key=lambda e: e.get("iter", 0))
+                kv = latest.get("kvCacheStats", {})
+                _kv_cache["data"] = {
+                    "used_blocks": kv.get("usedNumBlocks"), "free_blocks": kv.get("freeNumBlocks"),
+                    "max_blocks": kv.get("maxNumBlocks"), "tokens_per_block": kv.get("tokensPerBlock"),
+                    "cache_hit_rate": kv.get("cacheHitRate"), "gpu_mem_usage": latest.get("gpuMemUsage"),
+                    "active_requests": latest.get("numActiveRequests"), "iter_latency_ms": latest.get("iterLatencyMS"),
+                }
+                _kv_cache["ts"] = time.time()
+        except Exception:
+            pass
+        time.sleep(0.5)
 
+def kv_from_metrics():
+    # served from the background poller so we don't race the drain-on-read queue
+    if _kv_cache["data"] and (time.time() - _kv_cache["ts"] < 5):
+        return _kv_cache["data"]
+    return None
+
+threading.Thread(target=_kv_poller, daemon=True).start()
 def build_vram():
     w_bytes, w_files = weights_bytes()
     cfg = read_config()
